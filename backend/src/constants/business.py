@@ -20,4 +20,9 @@ class Status(StrEnum):
     FAILED = 'failed'
 
 
-FORMULA_VERSION = 'facility-minute-v1'
+class EvidencePolicy(StrEnum):
+    PARTIAL = 'partial'
+    DEFER = 'defer'
+
+
+FORMULA_VERSION = 'facility-minute-v2'

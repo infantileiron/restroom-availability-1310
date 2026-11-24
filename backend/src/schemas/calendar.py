@@ -8,6 +8,17 @@ from src.utils.calendar import minutes
 
 Code = Annotated[str, StringConstraints(pattern=r'^[A-Z0-9][A-Z0-9-]{1,23}$')]
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
+Stamp = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+def local_minute(stamp):
+    try:
+        parsed = datetime.fromisoformat(stamp)
+    except ValueError:
+        raise ValueError('门磁时间须写成 2026-11-12 06:12 形式') from None
+    if parsed.second or parsed.microsecond or parsed.tzinfo is not None:
+        raise ValueError('门磁记录只接受北京时间，精确到分钟')
+    return parsed
 
 
 class FacilityInput(BaseModel):
@@ -56,3 +67,26 @@ class OutageInput(BaseModel):
         if self.ends_at <= self.starts_at:
             raise ValueError('恢复时间必须晚于停用开始时间')
         return self
+
+
+class DoorRecordInput(BaseModel):
+    code: Code
+    facility_code: Code
+    closed_at: Stamp | None = None
+    reopened_at: Stamp | None = None
+    note: Annotated[str, StringConstraints(strip_whitespace=True, max_length=240)] = ''
+
+    @model_validator(mode='after')
+    def validate_record(self):
+        closed = local_minute(self.closed_at) if self.closed_at else None
+        reopened = local_minute(self.reopened_at) if self.reopened_at else None
+        if closed is None and reopened is None:
+            raise ValueError('门磁记录至少要有关门或开门一端时间')
+        if closed and reopened and reopened <= closed:
+            raise ValueError('开门时间必须晚于关门时间')
+        return self
+
+
+class DoorImportInput(BaseModel):
+    filename: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
+    rows: Annotated[list[DoorRecordInput], Field(min_length=1, max_length=5000)]

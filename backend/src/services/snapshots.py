@@ -12,26 +12,58 @@ from src.models import calendar
 from src.models.audit import audit
 from src.models.database import connect
 from src.models.snapshots import SUMMARY, find, listing
+from src.services.availability import affected_facility_days
 from src.utils.calendar import month_bounds
 
 logger = logging.getLogger(__name__)
 
 
+def frozen_inputs(db, month, policy):
+    events = calendar.outages(db, month_bounds(month))
+    for event in events:
+        for field in ('starts_at', 'ends_at'):
+            event[field] = event[field].isoformat(timespec='minutes')
+    doors = calendar.door_records(db, month_bounds(month))
+    for record in doors:
+        for field in ('closed_at', 'reopened_at'):
+            if record[field] is not None:
+                record[field] = record[field].isoformat(timespec='minutes')
+    return {'month': month, 'evidence_policy': policy,
+            'facilities': calendar.facilities(db), 'outages': events, 'door_records': doors}
+
+
+def canonical(inputs):
+    return json.dumps(inputs, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
+
+
 def capture(payload, actor):
     with connect() as db:
         db.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ')
-        events = calendar.outages(db, month_bounds(payload.month))
-        for event in events:
-            for field in ('starts_at', 'ends_at'):
-                event[field] = event[field].isoformat(timespec='minutes')
-        inputs = {'month': payload.month, 'facilities': calendar.facilities(db), 'outages': events}
-        canonical = json.dumps(inputs, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
-        digest = hashlib.sha256(canonical).hexdigest()
-        inserted = db.execute(f'''INSERT INTO snapshots (month, label, inputs, checksum, created_by)
-                                  VALUES (%s, %s, %s, %s, %s) RETURNING {SUMMARY}''',
-                              (payload.month, payload.label, Jsonb(inputs), digest, actor)).fetchone()
+        inputs = frozen_inputs(db, payload.month, payload.evidence_policy)
+        revision, previous = 1, None
+        if payload.revises is not None:
+            previous = find(db, payload.revises)
+            if not previous:
+                raise HTTPException(404, '找不到要修订的版本')
+            if previous['month'] != payload.month:
+                raise HTTPException(409, '修订版本须与原版本同月')
+            if previous['status'] not in (Status.READY, Status.PUBLISHED, Status.FAILED):
+                raise HTTPException(409, '请先完成原版本核算，再冻结修订版')
+            revision = previous['revision'] + 1
+            inputs['revision'] = revision
+            affected = affected_facility_days(previous['inputs'], inputs)
+        else:
+            inputs['revision'] = revision
+            affected = None
+        digest = hashlib.sha256(canonical(inputs)).hexdigest()
+        inserted = db.execute(f'''INSERT INTO snapshots (month, label, inputs, checksum, created_by,
+                                                          revision, revises, affected)
+                                  VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING {SUMMARY}''',
+                              (payload.month, payload.label, Jsonb(inputs), digest, actor, revision,
+                               payload.revises, Jsonb(affected) if affected is not None else None)
+                              ).fetchone()
         audit(db, actor, 'snapshot.capture', inserted['id'])
-        return inserted
+        return {**inserted, 'affected_days': len(affected or [])}
 
 
 def list_visible(user):

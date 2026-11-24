@@ -1,13 +1,15 @@
 import {session} from '../stores/session.js';
 
-export async function api(path, payload, raw = false) {
+export async function api(path, payload, raw = false, multipart = false) {
   const headers = {};
   if (session.token) headers.Authorization = `Bearer ${session.token}`;
-  if (payload !== undefined) headers['Content-Type'] = 'application/json';
+  if (payload !== undefined && !multipart) headers['Content-Type'] = 'application/json';
   let response;
   try {
     response = await fetch(`/api${path}`, {
-      headers, method: payload === undefined ? 'GET' : 'POST', body: JSON.stringify(payload),
+      headers,
+      method: payload === undefined ? 'GET' : 'POST',
+      body: multipart ? payload : JSON.stringify(payload),
     });
   } catch {
     throw new Error('连接中断，请检查网络后重试');

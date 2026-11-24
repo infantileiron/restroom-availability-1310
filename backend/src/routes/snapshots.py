@@ -43,4 +43,6 @@ def export(snapshot_id: int, user=Depends(current_user)):
     path = export_path(snapshot_id)
     if not path.is_file():
         raise HTTPException(503, '暂时无法读取导出文件')
-    return FileResponse(path, media_type='text/csv; charset=utf-8', filename=f"开放时段-{snapshot['month']}-V{snapshot_id}.csv")
+    # A published report keeps its original number; revisions are separate versions.
+    return FileResponse(path, media_type='text/csv; charset=utf-8',
+                        filename=f"开放时段-{snapshot['month']}-V{snapshot_id}.csv")

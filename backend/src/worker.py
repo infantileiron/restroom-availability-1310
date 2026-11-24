@@ -7,6 +7,7 @@ from psycopg.types.json import Jsonb
 from redis.exceptions import RedisError
 
 from src.config.runtime import REDIS, WAKE_QUEUE
+from src.constants.business import FORMULA_VERSION
 from src.models.audit import audit
 from src.models.database import connect
 from src.services.availability import calculate
@@ -16,14 +17,34 @@ HEARTBEAT = Path('/tmp/heartbeat')
 log = logging.getLogger(__name__)
 
 
+def previous_result(db, job):
+    """Result this job may reuse for unaffected days.
+
+    Only the version being revised, or this same job's earlier result after a
+    retry, is a valid base, and only when it was produced by the current formula;
+    anything else would mix incompatible frozen inputs.
+    """
+    if job['affected'] is None:
+        return None
+    for candidate in (job['revises'], job['id']):
+        if candidate is None:
+            continue
+        parent = db.execute('SELECT result FROM snapshots WHERE id = %s', (candidate,)).fetchone()
+        if parent and parent['result'] and parent['result'].get('formula') == FORMULA_VERSION:
+            return parent['result']
+    return None
+
+
 def work_once():
     with connect() as db:
-        job = db.execute("""SELECT id, inputs, checksum FROM snapshots WHERE status = 'queued'
-                            ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED""").fetchone()
+        job = db.execute("""SELECT id, month, revises, affected, inputs, checksum FROM snapshots
+                            WHERE status = 'queued' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED""").fetchone()
         if job is None:
             return False
         try:
-            result = calculate(job['inputs'])
+            previous = previous_result(db, job)
+            result = calculate(job['inputs'], previous=previous,
+                               affected=job['affected'] if previous is not None else None)
             write_export(job['id'], job['inputs'], job['checksum'], result)
         except Exception:
             log.exception('Snapshot %s failed', job['id'])
